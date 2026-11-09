@@ -293,7 +293,7 @@ func pluginRegistration() registration {
 			Name:             providerName,
 			Version:          version,
 			Author:           "wb2api (protocol reference: lovingfish/workbuddy-cliproxy, MIT)",
-			GitHubRepository: "https://github.com/holtwood/wb2api",
+			GitHubRepository: "https://github.com/holtwood-projects/wb2api",
 		},
 		Capabilities: registrationCapability{
 			ModelProvider:         true,

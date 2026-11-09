@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/http"
+	"sync"
 )
 
 // TraceCtx carries the official client's conversation / trace identifier
@@ -14,6 +15,9 @@ import (
 //
 // See notes/workbuddy-protocol-notes.md §12-13 and specs/capture-2026-09-02.md.
 type TraceCtx struct {
+	// 同一会话的并发请求共享一个 TraceCtx；NextMessage 写 RequestID、
+	// Apply 读全部字段，必须加锁，否则 -race 下会报数据竞态。
+	mu             sync.Mutex
 	ConversationID string // X-Conversation-ID, stable per conversation (uuid)
 	RootID         string // X-Conversation-Request-ID / X-Root-Request-ID / X-Trace-ID, 32-hex
 	SpanID         string // per-request span id, 32-hex
@@ -33,11 +37,15 @@ func NewTraceCtx() *TraceCtx {
 
 // NextMessage rotates the per-message request id (each chat call gets a new one).
 func (tc *TraceCtx) NextMessage() {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
 	tc.RequestID = newHex32()
 }
 
 // Apply sets the full official header family onto h.
 func (tc *TraceCtx) Apply(h http.Header) {
+	tc.mu.Lock()
+	defer tc.mu.Unlock()
 	h.Set("X-Conversation-ID", tc.ConversationID)
 	h.Set("X-Conversation-Request-ID", tc.RootID)
 	h.Set("X-Conversation-Message-ID", tc.RequestID)

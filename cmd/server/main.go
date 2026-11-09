@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 
 	"wb2api/core"
@@ -65,10 +66,14 @@ func main() {
 }
 
 type server struct {
-	chat     *core.ChatClient
-	oauth    *core.OAuth
-	mgr      *core.Manager
-	authDir  string
+	chat    *core.ChatClient
+	oauth   *core.OAuth
+	mgr     *core.Manager
+	authDir string
+
+	// HTTP handler 并发执行；两个 map 都必须持 mu 访问，否则 Go 运行时会以
+	// "concurrent map read and map write" 直接终止进程（recover 无法捕获）。
+	mu       sync.Mutex
 	sessions map[string]*core.LoginSession
 	traces   map[string]*core.TraceCtx
 }
@@ -105,11 +110,13 @@ func (s *server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if skey == "" {
 		skey = model
 	}
+	s.mu.Lock()
 	tc := s.traces[skey]
 	if tc == nil {
 		tc = core.NewTraceCtx()
 		s.traces[skey] = tc
 	}
+	s.mu.Unlock()
 
 	resp, err := s.chat.DoChat(r.Context(), acct.Auth, tc, body)
 	if err != nil {
@@ -161,14 +168,18 @@ func (s *server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, "start login: "+err.Error())
 		return
 	}
+	s.mu.Lock()
 	s.sessions[sess.State] = sess
+	s.mu.Unlock()
 	writeJSON(w, http.StatusOK, map[string]any{"authUrl": sess.AuthURL, "state": sess.State})
 }
 
 // handlePoll checks a login's status and persists the auth on success.
 func (s *server) handlePoll(w http.ResponseWriter, r *http.Request) {
 	state := r.URL.Query().Get("state")
+	s.mu.Lock()
 	sess, ok := s.sessions[state]
+	s.mu.Unlock()
 	if !ok {
 		writeErr(w, http.StatusBadRequest, "unknown state")
 		return
@@ -182,7 +193,9 @@ func (s *server) handlePoll(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, err.Error())
 		return
 	}
+	s.mu.Lock()
 	delete(s.sessions, state)
+	s.mu.Unlock()
 	path := filepath.Join(s.authDir, provider+".json")
 	if err := a.Save(path); err != nil {
 		writeErr(w, http.StatusInternalServerError, "save auth: "+err.Error())

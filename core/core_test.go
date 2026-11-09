@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -463,5 +464,24 @@ func TestScanSSEEdgeCases(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "{\"a\":1}" {
 		t.Fatalf("nested data: parse failed: %v", got)
+	}
+}
+
+// TestTraceCtxConcurrent 覆盖同一会话的并发请求：NextMessage 写 RequestID、
+// Apply 读全部字段。修复前该用例在 -race 下会报数据竞态。
+func TestTraceCtxConcurrent(t *testing.T) {
+	tc := NewTraceCtx()
+	var wg sync.WaitGroup
+	for i := 0; i < 32; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			tc.NextMessage()
+			tc.Apply(http.Header{})
+		}()
+	}
+	wg.Wait()
+	if tc.ConversationID == "" || tc.RootID == "" || tc.RequestID == "" {
+		t.Fatal("trace context fields must stay populated after concurrent use")
 	}
 }

@@ -30,11 +30,15 @@ type Manager struct {
 	accounts []*Account
 	strategy Strategy
 	next     int
+	// affinity 把会话键固定到账号路径，保证上游缓存的前缀落在同一账号。
+	// 每个 Manager 独占一份，随 manager.mu 一起保护；不使用包级变量，
+	// 否则多个 Manager 会各自持不同锁却写同一张 map。
+	affinity map[string]string
 }
 
 // NewManager creates an empty account manager.
 func NewManager(strategy Strategy) *Manager {
-	return &Manager{strategy: strategy}
+	return &Manager{strategy: strategy, affinity: map[string]string{}}
 }
 
 // LoadDir scans dir for *.json auth files and adds them. Existing accounts
@@ -136,12 +140,9 @@ func (m *Manager) Pick(affinity string) (*Account, error) {
 	}
 }
 
-// affinityMap maps a session key to the account that owns it.
-var affinityMap = map[string]string{}
-
 // pickAffinityLocked returns the account bound to key, if any.
 func (m *Manager) pickAffinityLocked(key string) *Account {
-	path, ok := affinityMap[key]
+	path, ok := m.affinity[key]
 	if !ok {
 		return nil
 	}
@@ -150,13 +151,13 @@ func (m *Manager) pickAffinityLocked(key string) *Account {
 			return a
 		}
 	}
-	delete(affinityMap, key)
+	delete(m.affinity, key)
 	return nil
 }
 
 // bindLocked pins key to an account path.
 func (m *Manager) bindLocked(key string, acct *Account) {
-	affinityMap[key] = acct.Path
+	m.affinity[key] = acct.Path
 }
 
 // SessionKeyFromBody extracts a cache-affinity session key from an OpenAI
